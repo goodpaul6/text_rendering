@@ -55,10 +55,7 @@ scale_for_height_px :: proc(font: ^tt.fontinfo, height_px: int) -> [2]f32 {
     scale := tt.ScaleForPixelHeight(font, f32(height_px))
     dpi := rl.GetWindowScaleDPI()
 
-    scale_x := dpi.x * scale
-    scale_y := dpi.y * scale
-
-    return {scale_x, scale_y}
+    return scale * dpi
 }
 
 font_atlas_make :: proc(info: tt.fontinfo, init_size: [2]i32, padding: [2]f32) -> Font_Atlas {
