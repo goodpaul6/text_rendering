@@ -6,8 +6,52 @@ import "core:fmt"
 import rl "vendor:raylib"
 import tt "vendor:stb/truetype"
 
-scale_for_height_px :: proc(font: ^tt.fontinfo, height_px: f32) -> [2]f32 {
-    scale := tt.ScaleForPixelHeight(font, height_px)
+Glyph_Info :: struct {
+    // These two together form the key for this glyph
+    codepoint: rune,
+    height_px: int,
+
+    // Source rect in the atlas
+    atlas_rect: rl.Rectangle,
+
+    // These are relative to the <current_point, baseline> as described here:
+    // https://github.com/nothings/stb/blob/master/stb_truetype.h#L217
+    tt_bounds: [4]i32,
+}
+
+Font_Atlas :: struct {
+    // Note that the underlying data for this must live longer than this
+    // atlas struct.
+    info: tt.fontinfo,
+
+    // This is additional space we add between glyphs to prevent artifacts
+    padding: [2]f32,
+
+    unscaled_baseline: f32,
+
+    image: rl.Image,
+
+    // We update this on the fly as the cache is updated
+    texture: rl.Texture,
+
+    // Current position we're packing characters into.
+    // Really dumb packing algorithm: just keep adding characters
+    // horizontally and move down when we hit the right edge. If
+    // we run out of room, then resize the image and continue.
+    pack_pos: [2]f32,
+
+    // As we're packing glyphs, we keep track of the tallest glyph in the current
+    // row so that when we reset to the start of the next row, we move pack_pos
+    // down enough not to clash with any char on the previous row.
+    pack_row_h: f32,
+
+    // TODO(Apaar): Use a map from codepoint + height_px to Glyph_Info here.
+    // Can use a fixed array of bytes to create a hashable key.
+    glyphs: [dynamic]Glyph_Info,
+}
+
+scale_for_height_px :: proc(font: ^tt.fontinfo, height_px: int) -> [2]f32 {
+    scale := tt.ScaleForPixelHeight(font, f32(height_px))
     dpi := rl.GetWindowScaleDPI()
 
     scale_x := dpi.x * scale
@@ -16,19 +60,52 @@ scale_for_height_px :: proc(font: ^tt.fontinfo, height_px: f32) -> [2]f32 {
     return {scale_x, scale_y}
 }
 
-// Returns the bitmap box of the codepoint glyph
-render_codepoint_to_image :: proc (
-    font: ^tt.fontinfo, 
-    dest_image: ^rl.Image, 
-    dest_pos: [2]f32,
-    scale: [2]f32,
-    codepoint: rune,
-    allocator := context.temp_allocator
-) -> [4]i32 {
+font_atlas_make :: proc(info: tt.fontinfo, init_size: [2]i32, padding: [2]f32) -> Font_Atlas {
+    info := info
+
+    // We need this to calculate the baseline as defined here:
+    // https://github.com/nothings/stb/blob/master/stb_truetype.h#L201
+    x0, y0, x1, y1: i32
+    tt.GetFontBoundingBox(&info, &x0, &y0, &x1, &y1)
+
+    image := rl.GenImageColor(init_size.x, init_size.y, rl.BLACK)
+
+    return {
+        info = info,
+        padding = padding,
+
+        unscaled_baseline = f32(-y0),
+
+        image = image,
+
+        texture = rl.LoadTextureFromImage(image),
+    }
+}
+
+font_atlas_destroy :: proc(using atlas: ^Font_Atlas) {
+    rl.UnloadTexture(texture)
+    rl.UnloadImage(image)
+}
+
+// The Glyph_Info returned by this may be invalidated after another call to this function.
+// Use this just before rendering the glyph.
+//
+// TODO(Apaar): Actually, we shouldn't resize the image unless we can't fit all the characters we need
+// for a _single_ draw call. Otherwise, we're fine just clearing out the atlas. This would require us
+// to get the entire string (or all unique codepoints I guess) we want to render ahead of time.
+font_atlas_get_or_render_glyph :: proc(using atlas: ^Font_Atlas, codepoint: rune, height_px: int) -> Glyph_Info {
+    for &g in glyphs {
+        if g.codepoint == codepoint && g.height_px == height_px {
+            return g
+        }
+    }
+
+    scale := scale_for_height_px(&info, height_px)
+
     ix0, iy0, ix1, iy1: i32
 
     tt.GetCodepointBitmapBox(
-        font, 
+        &info, 
         codepoint, 
         scale.x,
         scale.y,
@@ -38,16 +115,38 @@ render_codepoint_to_image :: proc (
     w := ix1 - ix0
     h := iy1 - iy0
 
-    data := make([]byte, w * h, allocator)
+    if pack_pos.x + f32(w) >= f32(image.width) {
+        pack_pos.x = 0
+        pack_pos.y += pack_row_h + padding.y
+        
+        pack_row_h = 0 
+    }
+
+    if pack_pos.y >= f32(image.height) {
+        // Time to resize and continue
+        new_image := rl.GenImageColor(image.width * 2, image.height * 2, rl.BLACK)
+        new_texture := rl.LoadTextureFromImage(new_image)
+
+        rl.UnloadImage(image)
+        rl.UnloadTexture(texture)
+
+        image = new_image
+        texture = new_texture
+        clear(&glyphs)
+
+        return font_atlas_get_or_render_glyph(atlas, codepoint, height_px)
+    }
+
+    data := make([]byte, w * h, context.temp_allocator)
 
     tt.MakeCodepointBitmap(
-        font, raw_data(data), 
+        &info, raw_data(data), 
         out_w=w, out_h=h, out_stride=w, 
         scale_x=scale.x, scale_y=scale.y,
         codepoint=codepoint,
     )
 
-    image := rl.Image{
+    glyph_image := rl.Image{
         data = raw_data(data),
         width = w,
         height = h,
@@ -55,29 +154,43 @@ render_codepoint_to_image :: proc (
         format = .UNCOMPRESSED_GRAYSCALE
     }
 
+    atlas_rect := rl.Rectangle{pack_pos.x, pack_pos.y, f32(w), f32(h)}
+
     rl.ImageDraw(
-        dest_image, image,
+        &image, glyph_image,
         srcRec={0, 0, f32(w), f32(h)},
-        dstRec={dest_pos.x, dest_pos.y, f32(w), f32(h)},
+        dstRec=atlas_rect,
         tint=rl.WHITE,
     )
+    
+    rl.UpdateTexture(texture, image.data)
 
-    return {ix0, iy0, ix1, iy1}
+    pack_pos.x += f32(w) + padding.x
+    pack_row_h = max(pack_row_h, f32(h))
+
+    glyph_info := Glyph_Info{
+        codepoint = codepoint,
+        height_px = height_px,
+
+        atlas_rect = atlas_rect,
+        tt_bounds = {ix0, iy0, ix1, iy1},
+    }
+
+    append(&glyphs, glyph_info)
+
+    return glyph_info
 }
 
-gen_font_atlas_texture :: proc(font: ^tt.fontinfo) -> rl.Texture {
-    atlas_image := rl.GenImageColor(512, 512, rl.BLACK)
-    defer rl.UnloadImage(atlas_image)
+make_test_font_atlas :: proc(info: tt.fontinfo) -> Font_Atlas {
+    atlas := font_atlas_make(info, {512, 512}, {2, 2})
 
-    ascent, descent, line_gap: i32
-    tt.GetFontVMetrics(font, &ascent, &descent, &line_gap)
+    font_atlas_get_or_render_glyph(&atlas, 'H', 64)
+    font_atlas_get_or_render_glyph(&atlas, 'H', 36)
+    font_atlas_get_or_render_glyph(&atlas, 'e', 24)
+    font_atlas_get_or_render_glyph(&atlas, 'E', 24)
+    font_atlas_get_or_render_glyph(&atlas, 'e', 24)
 
-    scale := scale_for_height_px(font, 64)
-
-    h_size := render_codepoint_to_image(font, &atlas_image, {0, 0}, scale, 'H')
-    e_size := render_codepoint_to_image(font, &atlas_image, {h_size.x, f32(ascent) * scale.y}, scale, 'e')
-
-    return rl.LoadTextureFromImage(atlas_image)
+    return atlas
 }
 
 main :: proc() {
@@ -91,21 +204,23 @@ main :: proc() {
     font := tt.fontinfo{}
     tt.InitFont(&font, raw_data(font_data), 0)
 
-    atlas_texture := gen_font_atlas_texture(&font)
-    defer rl.UnloadTexture(atlas_texture)
+    atlas := make_test_font_atlas(font)
+    defer font_atlas_destroy(&atlas)
 
     for !rl.WindowShouldClose() {
         if rl.IsWindowResized() {
-            rl.UnloadTexture(atlas_texture)
-            atlas_texture = gen_font_atlas_texture(&font)
+            font_atlas_destroy(&atlas)
+            atlas = make_test_font_atlas(font)
         }
 
         rl.ClearBackground(rl.BLACK)
 
         rl.BeginDrawing()
 
-        rl.DrawTexture(atlas_texture, 10, 10, rl.WHITE)
+        rl.DrawTexture(atlas.texture, 10, 10, rl.WHITE)
 
         rl.EndDrawing()
+
+        free_all(context.temp_allocator)
     }
 }
