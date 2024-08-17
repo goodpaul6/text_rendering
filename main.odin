@@ -35,7 +35,7 @@ main :: proc() {
 
         rect := dyn_font_measure_text(&font, text)
         dyn_font_draw_text(&font, "United Martians Will Alwayz Prevail", {
-            render_size.x / 2 - rect.width / 2, 
+            render_size.x / 2 - rect.width / 2,
             render_size.y / 2 - rect.height / 2,
         }, rl.RED)
 
