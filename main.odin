@@ -196,7 +196,7 @@ main :: proc() {
     rl.InitWindow(640, 360, "Text Rendering")
     defer rl.CloseWindow()
 
-    font_data :: #load("../opal/fonts/Inter-Regular.ttf")
+    font_data :: #load("C:/Windows/Fonts/arial.ttf")
 
     font := tt.fontinfo{}
     tt.InitFont(&font, raw_data(font_data), 0)
@@ -216,15 +216,15 @@ main :: proc() {
         rl.BeginDrawing()
 
         {
-            x := f32(10)
-            y := f32(40)
+            x := f32(80)
+            y := f32(180)
 
             prev_ch := rune(0)
 
-            for ch in "United Martians" {
-                gi := font_atlas_get_or_render_glyph(&atlas, ch, 64)
+            for ch in "United Martians Will Alwayz Prevail" {
+                gi := font_atlas_get_or_render_glyph(&atlas, ch, 36)
 
-                if rl.IsKeyDown(.K) && prev_ch != rune(0) {
+                if prev_ch != rune(0) {
                     kern := f32(tt.GetCodepointKernAdvance(&font, prev_ch, ch))
                     x += kern
                 }
