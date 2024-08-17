@@ -219,8 +219,15 @@ main :: proc() {
             x := f32(10)
             y := f32(40)
 
-            for ch in "Hello, world!" {
+            prev_ch := rune(0)
+
+            for ch in "United Martians" {
                 gi := font_atlas_get_or_render_glyph(&atlas, ch, 64)
+
+                if rl.IsKeyDown(.K) && prev_ch != rune(0) {
+                    kern := f32(tt.GetCodepointKernAdvance(&font, prev_ch, ch))
+                    x += kern
+                }
 
                 baseline := atlas.unscaled_baseline * gi.scale.y + y
 
@@ -241,6 +248,7 @@ main :: proc() {
                 )
 
                 x += gi.unscaled_advance * gi.scale.x
+                prev_ch = ch
             }
         }
 
