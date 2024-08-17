@@ -11,12 +11,16 @@ Glyph_Info :: struct {
     codepoint: rune,
     height_px: int,
 
+    scale: [2]f32,
+
+    unscaled_advance: f32,
+
     // Source rect in the atlas
     atlas_rect: rl.Rectangle,
 
     // These are relative to the <current_point, baseline> as described here:
     // https://github.com/nothings/stb/blob/master/stb_truetype.h#L217
-    tt_bounds: [4]i32,
+    tt_bounds: [4]f32,
 }
 
 Font_Atlas :: struct {
@@ -168,29 +172,22 @@ font_atlas_get_or_render_glyph :: proc(using atlas: ^Font_Atlas, codepoint: rune
     pack_pos.x += f32(w) + padding.x
     pack_row_h = max(pack_row_h, f32(h))
 
+    advance, left_side_bearing: i32
+
+    tt.GetCodepointHMetrics(&info, codepoint, &advance, &left_side_bearing)
+
     glyph_info := Glyph_Info{
         codepoint = codepoint,
         height_px = height_px,
-
+        scale = scale,
+        unscaled_advance = f32(advance),
         atlas_rect = atlas_rect,
-        tt_bounds = {ix0, iy0, ix1, iy1},
+        tt_bounds = {f32(ix0), f32(iy0), f32(ix1), f32(iy1)},
     }
 
     append(&glyphs, glyph_info)
 
     return glyph_info
-}
-
-make_test_font_atlas :: proc(info: tt.fontinfo) -> Font_Atlas {
-    atlas := font_atlas_make(info, {512, 512}, {2, 2})
-
-    font_atlas_get_or_render_glyph(&atlas, 'H', 64)
-    font_atlas_get_or_render_glyph(&atlas, 'H', 36)
-    font_atlas_get_or_render_glyph(&atlas, 'e', 24)
-    font_atlas_get_or_render_glyph(&atlas, 'E', 24)
-    font_atlas_get_or_render_glyph(&atlas, 'e', 24)
-
-    return atlas
 }
 
 main :: proc() {
@@ -204,20 +201,48 @@ main :: proc() {
     font := tt.fontinfo{}
     tt.InitFont(&font, raw_data(font_data), 0)
 
-    atlas := make_test_font_atlas(font)
+    atlas := font_atlas_make(font, {512, 512}, {2, 2})
     defer font_atlas_destroy(&atlas)
 
     for !rl.WindowShouldClose() {
         if rl.IsWindowResized() {
+            // The DPI may have changed, so invalidate the atlas
             font_atlas_destroy(&atlas)
-            atlas = make_test_font_atlas(font)
+            atlas = font_atlas_make(font, {512, 512}, {2, 2})
         }
 
         rl.ClearBackground(rl.BLACK)
 
         rl.BeginDrawing()
 
-        rl.DrawTexture(atlas.texture, 10, 10, rl.WHITE)
+        {
+            x := f32(10)
+            y := f32(40)
+
+            for ch in "Hello, world!" {
+                gi := font_atlas_get_or_render_glyph(&atlas, ch, 64)
+
+                baseline := atlas.unscaled_baseline * gi.scale.y + y
+
+                x0 := x + gi.tt_bounds[0]
+                y0 := baseline + gi.tt_bounds[1]
+                x1 := x + gi.tt_bounds[2]
+                y1 := baseline + gi.tt_bounds[3]
+
+                dest_rect := rl.Rectangle{x0, y0, (x1 - x0), (y1 - y0)}
+
+                rl.DrawTexturePro(
+                    atlas.texture, 
+                    source=gi.atlas_rect,
+                    dest=dest_rect,
+                    origin={0, 0},
+                    rotation=0,
+                    tint=rl.WHITE,
+                )
+
+                x += gi.unscaled_advance * gi.scale.x
+            }
+        }
 
         rl.EndDrawing()
 
