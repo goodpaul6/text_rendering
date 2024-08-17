@@ -54,6 +54,12 @@ Font_Atlas :: struct {
     glyphs: [dynamic]Glyph_Info,
 }
 
+Dynamic_Font :: struct {
+    height_px: int,
+
+    atlas: Font_Atlas,
+}
+
 scale_for_height_px :: proc(font: ^tt.fontinfo, height_px: int) -> [2]f32 {
     scale := tt.ScaleForPixelHeight(font, f32(height_px))
     dpi := rl.GetWindowScaleDPI()
@@ -72,7 +78,7 @@ font_atlas_make :: proc(info: tt.fontinfo, init_size: [2]i32, padding: [2]f32) -
     x0, y0, x1, y1: i32
     tt.GetFontBoundingBox(&info, &x0, &y0, &x1, &y1)
 
-    image := rl.GenImageColor(init_size.x, init_size.y, rl.BLACK)
+    image := rl.GenImageColor(init_size.x, init_size.y, {0, 0, 0, 0})
 
     return {
         info = info,
@@ -128,7 +134,7 @@ font_atlas_get_or_render_glyph :: proc(using atlas: ^Font_Atlas, codepoint: rune
 
     if pack_pos.y >= f32(image.height) {
         // Time to resize and continue
-        new_image := rl.GenImageColor(image.width * 2, image.height * 2, rl.BLACK)
+        new_image := rl.GenImageColor(image.width * 2, image.height * 2, {0, 0, 0, 0})
         new_texture := rl.LoadTextureFromImage(new_image)
 
         rl.UnloadImage(image)
@@ -150,12 +156,22 @@ font_atlas_get_or_render_glyph :: proc(using atlas: ^Font_Atlas, codepoint: rune
         codepoint=codepoint,
     )
 
+    alpha_data := make([]byte, w * h * 2, context.temp_allocator)
+
+    // Convert the gray value into alpha
+    for i: i32 = 0; i < w * h * 2; i += 2 {
+        alpha_data[i] = 0xff
+        alpha_data[i + 1] = data[i / 2]
+    }
+
+    // Note that this image is never Unloaded because the data
+    // is allocated via Odin's temp allocator and not raylib's.
     glyph_image := rl.Image{
-        data = raw_data(data),
+        data = raw_data(alpha_data),
         width = w,
         height = h,
         mipmaps = 1,
-        format = .UNCOMPRESSED_GRAYSCALE
+        format = .UNCOMPRESSED_GRAY_ALPHA
     }
 
     atlas_rect := rl.Rectangle{pack_pos.x, pack_pos.y, f32(w), f32(h)}
@@ -166,7 +182,7 @@ font_atlas_get_or_render_glyph :: proc(using atlas: ^Font_Atlas, codepoint: rune
         dstRec=atlas_rect,
         tint=rl.WHITE,
     )
-    
+
     rl.UpdateTexture(texture, image.data)
 
     pack_pos.x += f32(w) + padding.x
