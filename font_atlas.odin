@@ -54,7 +54,7 @@ Font_Atlas :: struct {
 scale_for_height_px :: proc(font: ^tt.fontinfo, height_px: int) -> [2]f32 {
     scale := tt.ScaleForPixelHeight(font, f32(height_px))
     dpi := rl.GetWindowScaleDPI()
-
+    
     return scale * dpi
 }
 
@@ -116,7 +116,7 @@ font_atlas_get_or_render_glyph :: proc(using atlas: ^Font_Atlas, codepoint: rune
     if pack_pos.x + f32(w) >= f32(image.width) {
         pack_pos.x = 0
         pack_pos.y += pack_row_h + padding.y
-        
+
         pack_row_h = 0 
     }
 
